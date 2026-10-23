@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Remote Controller</string>
+    <string name="accessibility_summary">Executa toques e digitação enviados pelo computador durante uma sessão aceita por você.</string>
+    <string name="accessibility_description">O Remote Controller usa este serviço apenas enquanto há uma sessão de controle remoto que você aceitou neste aparelho, sempre com indicador visível na tela. Ele executa toques, gestos, digitação e navegação (voltar, início) enviados pelo computador pareado. Nenhum dado de tela ou conteúdo é lido fora de uma sessão ativa. Você pode encerrar a sessão a qualquer momento pela notificação ou pelo app.</string>
+</resources>

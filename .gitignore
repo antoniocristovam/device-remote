@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+*.log
+.env
+coverage/
+.DS_Store
+# android
+apps/android-app/android/.gradle/
+apps/android-app/android/app/build/
+apps/android-app/android/build/
+apps/android-app/android/local.properties
+*.keystore
+!debug.keystore
+.fake-desktop.json
+release/

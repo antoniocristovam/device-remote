@@ -1,0 +1,126 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:packages
+      - run: npm run typecheck
+      - run: npm test
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/android-app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - name: Unit tests (TS <-> Kotlin crypto interop)
+        working-directory: apps/android-app/android
+        run: ./gradlew :app:testDebugUnitTest
+      - name: Reverse interop check (Kotlin-signed messages verified by TypeScript)
+        working-directory: .
+        run: npm ci && npm run build:packages && node scripts/verify-android-vectors.mjs
+      - name: Debug APK
+        working-directory: apps/android-app/android
+        run: ./gradlew :app:assembleDebug -PreactNativeArchitectures=arm64-v8a,x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: apps/android-app/android/app/build/outputs/apk/debug/*.apk
+
+  desktop:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon runner; builds both arm64 and x64 (see electron-builder.yml).
+          - os: macos-14
+            target: --mac
+          - os: windows-latest
+            target: --win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:packages
+      - run: npm run build -w @rc/desktop
+
+      - name: Package
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          # macOS signing (Developer ID Application .p12, base64) and notarisation. All optional:
+          # without them the build is ad-hoc signed and not notarised (see docs/build.md).
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows Authenticode certificate (optional).
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          EXTRA=""
+          if [ "${{ matrix.os }}" = "macos-14" ] && [ -z "$CSC_LINK" ]; then
+            # No Developer ID: ad-hoc sign so the Apple Silicon build still launches. Hardened runtime
+            # is only needed for notarisation and breaks ad-hoc builds (library validation), so it
+            # stays on only for real Developer ID builds.
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            EXTRA="-c.mac.identity=- -c.mac.hardenedRuntime=false"
+          fi
+          npx electron-builder ${{ matrix.target }} --publish never $EXTRA
+
+      - name: Verify macOS bundle
+        if: matrix.os == 'macos-14'
+        working-directory: apps/desktop
+        run: |
+          APP=$(find release -maxdepth 3 -name "Remote Controller.app" -path "*mac-arm64*" | head -1)
+          echo "Checking $APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -d --entitlements - "$APP"
+          /usr/libexec/PlistBuddy -c "Print :NSLocalNetworkUsageDescription" "$APP/Contents/Info.plist"
+          lipo -archs "$APP/Contents/MacOS/Remote Controller"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            apps/desktop/release/*/*.dmg
+            apps/desktop/release/*/*.zip
+            apps/desktop/release/*/*.exe
+          if-no-files-found: error

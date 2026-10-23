@@ -1,0 +1,22 @@
+{
+  "name": "remote-controller",
+  "private": true,
+  "workspaces": [
+    "packages/protocol",
+    "packages/crypto-proto",
+    "apps/signaling",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build:packages": "npm run build -w @rc/protocol -w @rc/crypto-proto",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:signaling": "npm run dev -w @rc/signaling",
+    "dev:desktop": "npm run dev -w @rc/desktop"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.0.0"
+  }
+}
