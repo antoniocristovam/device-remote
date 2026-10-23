@@ -40,7 +40,7 @@ class WebRtcSession(
     iceServers: List<PeerConnection.IceServer>,
     private val listener: Listener,
     /** USB sessions: the only path is the desktop's TURN relay, reached through adb reverse. */
-    relayOnly: Boolean = false,
+    private val relayOnly: Boolean = false,
 ) {
     interface Listener {
         fun onLocalSdp(type: String, sdp: String)
@@ -119,6 +119,7 @@ class WebRtcSession(
         }
         pc = factory.createPeerConnection(config, observer) ?: error("PeerConnection creation failed")
         sender = pc.addTrack(track, listOf("screen"))
+        startBitrate()
         applyEncoding()
 
         openChannel("control", ordered = false, maxRetransmits = 0)
@@ -133,7 +134,20 @@ class WebRtcSession(
     // ---------------- Signaling ----------------
 
     fun setRemoteAnswer(sdp: String) {
-        pc.setRemoteDescription(SimpleSdp("setRemote"), SessionDescription(SessionDescription.Type.ANSWER, sdp))
+        pc.setRemoteDescription(object : SimpleSdp("setRemote") {
+            // The transport exists only now: apply the USB start rate again so it takes effect.
+            override fun onSetSuccess() = startBitrate()
+        }, SessionDescription(SessionDescription.Type.ANSWER, sdp))
+    }
+
+    /**
+     * WebRTC's bandwidth estimate starts around 300 kbit/s, sized for an unknown internet path, and
+     * climbs from there: on a 1920-pixel screen that is seconds of smeared, stuttering video and
+     * a relapse every time the estimate dips. Over the USB cable bandwidth is plentiful, so start
+     * high and never fall below a floor.
+     */
+    private fun startBitrate() {
+        if (relayOnly) pc.setBitrate(USB_MIN_BPS, USB_START_BPS, null)
     }
 
     fun addRemoteIce(candidate: String, sdpMid: String?, sdpMLineIndex: Int) {
@@ -267,6 +281,7 @@ class WebRtcSession(
         params.encodings.forEach {
             it.maxBitrateBps = quality.maxBitrate
             it.maxFramerate = quality.fps
+            it.minBitrateBps = if (relayOnly) quality.maxBitrate / 2 else null
         }
         sender.parameters = params
     }
@@ -366,6 +381,8 @@ class WebRtcSession(
     companion object {
         private const val TAG = "RcWebRtc"
         private const val MAX_BUFFERED = 4L * 1024 * 1024
+        private const val USB_MIN_BPS = 1_500_000
+        private const val USB_START_BPS = 6_000_000
 
         val PRESETS = mapOf(
             "high" to Quality(1920, 60, 8_000_000),

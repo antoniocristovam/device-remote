@@ -20,7 +20,13 @@ export interface LocalLink {
  */
 export async function startLocalLink(): Promise<LocalLink> {
   const secret = randomBytes(32).toString('base64');
-  const relay = await startTurnRelay({ host: '127.0.0.1', port: 0, secret, realm: 'remote-controller-usb' });
+  const relay = await startTurnRelay({
+    host: '127.0.0.1',
+    port: 0,
+    secret,
+    realm: 'remote-controller-usb',
+    diag: process.env['RC_DIAG'] ? (l) => console.log(l) : undefined,
+  });
   const signaling = await startSignalingServer({
     host: '127.0.0.1',
     port: 0,

@@ -172,6 +172,8 @@ interface Allocation {
 
 interface Conn {
   socket: Socket;
+  /** Diagnostics: bytes in/out since the last report and the largest unsent backlog seen. */
+  stat: { in: number; out: number; maxQueued: number; maxGap: number; lastAt: number };
   buf: Buffer;
   nonce: string;
   key?: Buffer;
@@ -184,6 +186,8 @@ export interface TurnRelayOptions {
   port: number;
   secret: string;
   realm: string;
+  /** When set, logs per-connection throughput, write backlog and event-loop lag every 2 s. */
+  diag?: (line: string) => void;
 }
 
 export interface TurnRelay {
@@ -206,6 +210,33 @@ export function startTurnRelay(opts: TurnRelayOptions): Promise<TurnRelay> {
     if (a.conn.alloc === a) a.conn.alloc = undefined;
   };
 
+  const write = (c: Conn, b: Buffer) => {
+    c.socket.write(b);
+    c.stat.out += b.length;
+    if (c.socket.writableLength > c.stat.maxQueued) c.stat.maxQueued = c.socket.writableLength;
+  };
+
+  let lagMax = 0;
+  let lastTick = Date.now();
+  const diagTimer = opts.diag
+    ? setInterval(() => {
+        const now = Date.now();
+        lagMax = Math.max(lagMax, now - lastTick - 100);
+        lastTick = now;
+      }, 100)
+    : undefined;
+  const diagReport = opts.diag
+    ? setInterval(() => {
+        const parts = [...conns].map((c) => {
+          const r = `${c.alloc ? c.alloc.relayed.port : '-'} in=${(c.stat.in / 2048).toFixed(0)}KB/s out=${(c.stat.out / 2048).toFixed(0)}KB/s maxq=${(c.stat.maxQueued / 1024).toFixed(0)}KB gap=${c.stat.maxGap}ms`;
+          c.stat = { in: 0, out: 0, maxQueued: 0, maxGap: 0, lastAt: c.stat.lastAt };
+          return r;
+        });
+        opts.diag!(`[relay] lag=${lagMax}ms ${parts.join(' | ')}`);
+        lagMax = 0;
+      }, 2000)
+    : undefined;
+
   const sweep = setInterval(() => {
     const now = Date.now();
     for (const a of allocations.values()) if (a.expiresAt <= now) free(a);
@@ -223,9 +254,10 @@ export function startTurnRelay(opts: TurnRelayOptions): Promise<TurnRelay> {
       const h = Buffer.alloc(4);
       h.writeUInt16BE(ch, 0);
       h.writeUInt16BE(data.length, 2);
-      dst.conn.socket.write(Buffer.concat([h, data, Buffer.alloc(pad)]));
+      write(dst.conn, Buffer.concat([h, data, Buffer.alloc(pad)]));
     } else {
-      dst.conn.socket.write(
+      write(
+        dst.conn,
         encodeStun(Method.Data, Class.Indication, randomBytes(12), [
           [Attr.XorPeerAddress, xorAddress(from.relayed)],
           [Attr.Data, data],
@@ -349,6 +381,10 @@ export function startTurnRelay(opts: TurnRelayOptions): Promise<TurnRelay> {
 
   /** TCP carries back-to-back STUN messages and ChannelData frames (padded to 4 bytes). */
   const onData = (c: Conn, chunk: Buffer) => {
+    c.stat.in += chunk.length;
+    const now = Date.now();
+    if (c.stat.lastAt) c.stat.maxGap = Math.max(c.stat.maxGap, now - c.stat.lastAt);
+    c.stat.lastAt = now;
     c.buf = c.buf.length ? Buffer.concat([c.buf, chunk]) : chunk;
     for (;;) {
       if (c.buf.length < 4) return;
@@ -378,7 +414,7 @@ export function startTurnRelay(opts: TurnRelayOptions): Promise<TurnRelay> {
 
   const server = createServer((socket) => {
     socket.setNoDelay(true);
-    const c: Conn = { socket, buf: Buffer.alloc(0), nonce: randomBytes(12).toString('hex') };
+    const c: Conn = { socket, buf: Buffer.alloc(0), nonce: randomBytes(12).toString('hex'), stat: { in: 0, out: 0, maxQueued: 0, maxGap: 0, lastAt: 0 } };
     conns.add(c);
     socket.on('data', (d) => onData(c, d));
     socket.on('error', () => {
@@ -401,6 +437,8 @@ export function startTurnRelay(opts: TurnRelayOptions): Promise<TurnRelay> {
         close: () =>
           new Promise<void>((done) => {
             clearInterval(sweep);
+            clearInterval(diagTimer);
+            clearInterval(diagReport);
             for (const c of conns) c.socket.destroy();
             allocations.clear();
             server.close(() => done());

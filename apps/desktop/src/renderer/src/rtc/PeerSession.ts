@@ -243,7 +243,36 @@ export class PeerSession {
       s.senderBitrate = this.sender.availableBitrate;
       s.qualityLimitation = this.sender.qualityLimitation;
     }
+    if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV) this.logDiagnostics(report, s);
     this.ev.onStats(s);
+  }
+
+  private diagPrev: Record<string, number> = {};
+  /** Dev only: one line per second per device in the terminal (electron-vite forwards warnings, not info). */
+  private logDiagnostics(report: RTCStatsReport, s: LinkStats) {
+    let v: any;
+    let codec = '';
+    report.forEach((r: any) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'video') v = r;
+    });
+    if (!v) return;
+    report.forEach((r: any) => {
+      if (r.type === 'codec' && r.id === v.codecId) codec = String(r.mimeType).replace('video/', '');
+    });
+    const keys = ['framesReceived', 'framesDecoded', 'framesDropped', 'freezeCount', 'totalFreezesDuration', 'totalDecodeTime', 'totalInterFrameDelay', 'nackCount', 'pliCount', 'keyFramesDecoded', 'totalProcessingDelay', 'totalAssemblyTime', 'framesAssembledFromMultiplePackets'];
+    const d: any = {};
+    for (const k of keys) {
+      d[k] = (v[k] ?? 0) - (this.diagPrev[k] ?? 0);
+      this.diagPrev[k] = v[k] ?? 0;
+    }
+    const per = (x: number) => (d.framesDecoded > 0 ? ((x / d.framesDecoded) * 1000).toFixed(1) : '-');
+    console.warn(
+      `[diag ${this.fingerprint.slice(0, 6)}] ${codec} ${v.frameWidth}x${v.frameHeight} recv=${d.framesReceived} dec=${d.framesDecoded} drop=${d.framesDropped} ` +
+        `freeze=${d.freezeCount}/${(d.totalFreezesDuration * 1000).toFixed(0)}ms decode=${per(d.totalDecodeTime)}ms proc=${per(d.totalProcessingDelay)}ms ` +
+        `asm=${d.framesAssembledFromMultiplePackets > 0 ? ((d.totalAssemblyTime / d.framesAssembledFromMultiplePackets) * 1000).toFixed(1) : '-'}ms ` +
+        `jb=${s.jitterBufferMs?.toFixed(0) ?? '-'}ms rtt=${s.rttMs?.toFixed(0) ?? '-'} kbps=${s.bitrateKbps?.toFixed(0) ?? '-'} loss=${s.packetLossPct?.toFixed(1)} ` +
+        `nack=${d.nackCount} pli=${d.pliCount} key=${d.keyFramesDecoded} | phone: enc=${this.sender?.encodeFps?.toFixed(0) ?? '-'}fps bwe=${s.senderBitrate != null ? (s.senderBitrate / 1000).toFixed(0) : '-'}k lim=${s.qualityLimitation ?? '-'}`,
+    );
   }
 
   close() {

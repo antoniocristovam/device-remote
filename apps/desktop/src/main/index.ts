@@ -10,6 +10,10 @@ import { EDIT_COMMANDS, installMenu, type EditCommand } from './menu';
 import { PHONE_SIGNALING_PORT, PHONE_TURN_PORT, startLocalLink } from './usb/localLink';
 import { UsbBridge } from './usb/usbBridge';
 
+// Remote control favours latency over smoothness: show each frame as soon as it is decoded instead
+// of holding ~200 ms in the jitter buffer (Chromium's zero playout delay mode, used for cloud gaming).
+app.commandLine.appendSwitch('force-fieldtrials', 'WebRTC-ForcePlayoutDelay/min_ms:0,max_ms:0/');
+
 let win: BrowserWindow | null = null;
 /** Called when the window goes away: a session must never outlive the UI that shows it. */
 let onWindowClosed: () => void = () => {};
