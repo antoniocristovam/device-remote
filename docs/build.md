@@ -34,6 +34,18 @@ No CI, cadastre como secrets: `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`
 
 `WIN_CSC_LINK` e `WIN_CSC_KEY_PASSWORD` (certificado Authenticode). Sem eles, o instalador sai sem assinatura e o SmartScreen mostra "Editor desconhecido".
 
+### adb embutido (conexão por cabo USB)
+
+O instalador leva o `adb` dos platform-tools oficiais do Android (licença Apache 2.0, com o `NOTICE.txt` junto), para a conexão por cabo funcionar sem o Android SDK. Antes de empacotar:
+
+```bash
+node scripts/fetch-platform-tools.mjs
+```
+
+- O script baixa de `dl.google.com` para `apps/desktop/resources/adb/<win|mac>/` (fora do git). O `electron-builder.yml` copia essa pasta para `resources/adb` do app; no macOS ela é assinada junto com o app. O CI roda o script antes de empacotar.
+- Em tempo de execução, o app prefere um adb já instalado (PATH, `ANDROID_HOME`/`ANDROID_SDK_ROOT` ou o local padrão do SDK), para não derrubar o servidor adb de outra versão que o Android Studio esteja usando. Só sem nenhum deles é que ele usa o embutido.
+- No Windows, alguns celulares precisam do driver USB do fabricante para aparecer no `adb devices`.
+
 ## Diferenças de comportamento no macOS
 
 | Tema | macOS | Windows |

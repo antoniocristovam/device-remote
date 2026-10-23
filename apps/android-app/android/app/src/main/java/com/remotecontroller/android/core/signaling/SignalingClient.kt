@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
  * Reconnecting signaling client (OkHttp WebSocket). Joined rooms are re-joined after every
  * reconnect so a Wi-Fi/mobile switch does not drop the pairing channel. Callbacks run on the main thread.
  */
-class SignalingClient {
+class SignalingClient(private val maxBackoffMs: Long = 10_000) {
     enum class Status { OFFLINE, CONNECTING, ONLINE }
 
     interface Listener {
@@ -118,7 +118,7 @@ class SignalingClient {
         setStatus(Status.OFFLINE)
         if (!stopped) {
             main.postAtTime({ connect() }, RECONNECT, android.os.SystemClock.uptimeMillis() + backoffMs)
-            backoffMs = (backoffMs * 2).coerceAtMost(10_000)
+            backoffMs = (backoffMs * 2).coerceAtMost(maxBackoffMs)
         }
     }.let {}
 

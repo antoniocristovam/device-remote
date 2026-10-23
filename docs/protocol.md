@@ -101,7 +101,23 @@ Verificado no emulador:
 | Queda total de ~20 s | Recuperação ~2 s depois da volta da rede |
 | Queda acima de 90 s | `lost` nos dois lados |
 
-## 5. DataChannels (criados pelo celular)
+## 5. Transporte USB
+
+Com o celular no cabo e a Depuração USB autorizada, a sessão pode passar inteira pelo cabo, sem Wi-Fi nem servidor de sinalização. O protocolo das seções 3 e 4 não muda: só o caminho dos bytes muda.
+
+```
+celular localhost:38787 ──adb reverse──▶ desktop 127.0.0.1:<porta livre>  sinalização embutida (mesmo código de apps/signaling)
+celular localhost:38788 ──adb reverse──▶ desktop 127.0.0.1:<porta livre>  relay TURN-TCP embutido
+```
+
+- **Desktop** (`apps/desktop/src/main/usb/`): sobe a sinalização e o relay só em loopback. A cada 2 s, `adb devices` aplica os dois `adb reverse` em cada aparelho autorizado. Usa o adb do sistema, se houver; senão, o que vem no instalador.
+- **Celular**: com **Ficar disponível** ligado, mantém um segundo cliente de sinalização em `ws://127.0.0.1:38787` (backoff de no máximo 2 s) e entra nas mesmas salas nos dois links.
+- **Escolha do link**: o desktop entra na sala nos dois servidores e **prefere o USB**. Se o celular aparecer primeiro pela rede, o desktop espera 400 ms pelo cabo antes de mandar o `sess.req`. O celular responde pelo link em que o pedido chegou, e a sessão fica presa a ele: `sdp`, `ice`, `sess.resume` e `sess.end` só valem por esse link. Plugar o cabo no meio de uma sessão pela rede só vale para a próxima sessão.
+- **Mídia**: os dois lados usam `iceTransportPolicy = relay` com o relay local. O relay implementa um subconjunto da RFC 8656 sobre TCP (Allocate, Refresh, CreatePermission, ChannelBind, Send/Data e ChannelData). Os endereços relayed são virtuais (`192.0.2.1:<porta>`): os dados só passam entre alocações do próprio relay, sem sockets UDP. As credenciais são as da TURN REST API (seção 2), com um segredo aleatório por execução do desktop.
+- **Garantias**: as mesmas. DTLS/SRTP continua amarrado às chaves pareadas pelo SDP assinado. A porta 38787 no celular fica aberta para qualquer app local enquanto o cabo está ligado, e a sinalização e o relay do desktop aceitam qualquer processo local, mas nenhum deles consegue forjar `sess.req`, `sess.accept` ou o SDP. O pior que conseguem é atrapalhar a conexão, como um servidor de sinalização hostil.
+- A sessão pelo cabo aparece como **USB** nos dois lados (pílula no desktop, "via USB" no celular). O monitor de troca de rede do celular fica desligado nela.
+
+## 6. DataChannels (criados pelo celular)
 
 | Label | Entrega | Uso |
 |---|---|---|
@@ -145,7 +161,7 @@ O receptor reduz `name` a um nome-base seguro (`safeFileName`: sem diretórios, 
 
 Arquivos recebidos nunca são abertos automaticamente. O histórico do chat fica salvo localmente nos dois lados, por dispositivo pareado, e é apagado quando o dispositivo é removido.
 
-## 6. Garantias e limites
+## 7. Garantias e limites
 
 - **Sem sessão silenciosa**: toda sessão exige aceite no app e o diálogo de captura de tela do sistema (o Android 14+ exige isso a cada sessão).
 - **Indicador**: notificação de foreground service com "Encerrar agora" (reaparece se for dispensada) + overlay de acessibilidade "Controle remoto ativo" + o indicador de captura de tela do próprio sistema.

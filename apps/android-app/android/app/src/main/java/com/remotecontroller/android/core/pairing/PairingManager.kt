@@ -130,7 +130,7 @@ class PairingManager(private val core: RcCore) : SignalingClient.Listener {
                     core.stores.settings = core.stores.settings.copy(signalingUrl = a.signalingUrl)
                     cancel()
                     emit("paired", JSONObject().put("peer", peer.toJson()))
-                    if (core.available) core.signaling.join(peer.channelId)
+                    if (core.available) core.joinEverywhere(peer.channelId)
                     core.emitState()
                 }
                 "pair.reject" -> fail("O computador cancelou o pareamento.")

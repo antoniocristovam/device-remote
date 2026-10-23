@@ -79,6 +79,8 @@ jobs:
       - run: npm ci
       - run: npm run build:packages
       - run: npm run build -w @rc/desktop
+      - name: Fetch adb (Android platform-tools) to bundle
+        run: node scripts/fetch-platform-tools.mjs ${{ matrix.os == 'macos-14' && 'mac' || 'win' }}
 
       - name: Package
         working-directory: apps/desktop
@@ -115,6 +117,7 @@ jobs:
           codesign -d --entitlements - "$APP"
           /usr/libexec/PlistBuddy -c "Print :NSLocalNetworkUsageDescription" "$APP/Contents/Info.plist"
           lipo -archs "$APP/Contents/MacOS/Remote Controller"
+          "$APP/Contents/Resources/adb/adb" version
 
       - uses: actions/upload-artifact@v4
         with:

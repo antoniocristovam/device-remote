@@ -4,15 +4,17 @@ import { shortFingerprint } from '@rc/crypto-proto';
 import type { StoredPeer } from '../../../shared/api';
 import { rc } from '../rc';
 import { dateTime } from '../lib/format';
-import { endReasonText, useRemoteSession } from '../rtc/useRemoteSession';
+import { endReasonText, isOnStage } from '../rtc/useRemoteSession';
+import { useSession } from '../rtc/SessionsProvider';
 import { SessionStage } from '../components/SessionStage';
 
 export function DeviceView({ peer, online, onRemoved }: { peer: StoredPeer; online: boolean; onRemoved(): void }) {
-  const session = useRemoteSession(peer.fingerprint);
+  const session = useSession(peer.fingerprint);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  if (!session) return null;
   const { state } = session;
 
-  if (state.phase === 'connecting' || state.phase === 'live' || state.phase === 'reconnecting') {
+  if (isOnStage(state)) {
     return <SessionStage peer={peer} session={session} />;
   }
 

@@ -2,11 +2,13 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path';
 import { loadIdentity } from './identity';
 import { PairingController } from './pairing';
-import { SessionController } from './session';
+import { SessionManager } from './session';
 import { SignalingClient } from './signalingClient';
 import { createStores, type ChatEntry, type Settings } from './store';
 import { FileStore } from './files';
 import { EDIT_COMMANDS, installMenu, type EditCommand } from './menu';
+import { PHONE_SIGNALING_PORT, PHONE_TURN_PORT, startLocalLink } from './usb/localLink';
+import { UsbBridge } from './usb/usbBridge';
 
 let win: BrowserWindow | null = null;
 /** Called when the window goes away: a session must never outlive the UI that shows it. */
@@ -69,9 +71,25 @@ app.whenReady().then(async () => {
   installMenu(() => win);
   const signaling = new SignalingClient(stores.settings.get().signalingUrl);
   const pairing = new PairingController(identity, signaling, stores, (e) => send('rc:pairing', e));
-  const session = new SessionController(identity, signaling, stores, (e) => send('rc:session', e));
+  // USB: phones plugged in reach a loopback signaling server and TURN relay through adb reverse.
+  const local = await startLocalLink().catch((e: unknown) => {
+    console.warn('[usb] local link unavailable:', e);
+    return undefined;
+  });
+  const signalingUsb = local ? new SignalingClient(`ws://127.0.0.1:${local.signalingPort}`) : undefined;
+  const usb = new UsbBridge(local ? { [PHONE_SIGNALING_PORT]: local.signalingPort, [PHONE_TURN_PORT]: local.turnPort } : {});
+  const sessions = new SessionManager(
+    identity,
+    { network: signaling, usb: signalingUsb && local ? { sig: signalingUsb, turnUrl: () => local.desktopTurnUrl } : undefined },
+    stores,
+    (e) => send('rc:session', e),
+  );
   signaling.on('status', (s) => send('rc:signaling-status', s));
   signaling.start();
+  signalingUsb?.start();
+  usb.on('status', (s) => send('rc:usb', s));
+  if (local) void usb.start();
+  else usb.status = { adb: 'missing', devices: [] };
 
   ipcMain.handle('rc:identity', () => ({
     name: stores.settings.get().deviceName || identity.name,
@@ -91,9 +109,10 @@ app.whenReady().then(async () => {
     return next;
   });
   ipcMain.handle('rc:signaling:status', () => signaling.status);
+  ipcMain.handle('rc:usb:status', () => usb.status);
   ipcMain.handle('rc:peers:list', () => stores.peers.list());
   ipcMain.handle('rc:peers:remove', (_e, fp: string) => {
-    if (session.active?.peer === fp) session.end('user');
+    sessions.end(String(fp), 'user');
     stores.peers.remove(fp);
     stores.chats.clear(fp);
   });
@@ -118,21 +137,24 @@ app.whenReady().then(async () => {
     if ((EDIT_COMMANDS as readonly string[]).includes(cmd)) e.sender[cmd as EditCommand]();
   });
   onWindowClosed = () => {
-    session.end('user');
+    sessions.endAll();
     pairing.cancel();
   };
   ipcMain.handle('rc:history', () => stores.sessions.list());
   ipcMain.handle('rc:pairing:start', () => pairing.start());
   ipcMain.handle('rc:pairing:cancel', () => pairing.cancel());
-  ipcMain.handle('rc:session:connect', (_e, fp: string) => session.connect(fp));
-  ipcMain.handle('rc:session:end', () => session.end('user'));
-  ipcMain.handle('rc:session:answer', (_e, sdp: string) => session.sendAnswer(String(sdp)));
-  ipcMain.handle('rc:session:ice', (_e, c) => session.sendIce(c));
-  ipcMain.handle('rc:session:connection', (_e, state: string) => session.reportConnection(String(state)));
+  ipcMain.handle('rc:session:connect', (_e, fp: string) => sessions.connect(String(fp)));
+  ipcMain.handle('rc:session:end', (_e, fp: string) => sessions.end(String(fp), 'user'));
+  ipcMain.handle('rc:session:answer', (_e, fp: string, sdp: string) => sessions.get(String(fp))?.sendAnswer(String(sdp)));
+  ipcMain.handle('rc:session:ice', (_e, fp: string, c) => sessions.get(String(fp))?.sendIce(c));
+  ipcMain.handle('rc:session:connection', (_e, fp: string, state: string) => sessions.get(String(fp))?.reportConnection(String(state)));
 
   app.on('before-quit', () => {
-    session.end('user');
+    sessions.endAll();
     signaling.stop();
+    signalingUsb?.stop();
+    usb.stop();
+    void local?.close();
   });
 
   createWindow();

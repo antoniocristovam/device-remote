@@ -33,6 +33,7 @@ export function HomeScreen({ state, now, onPair }: { state: RcState; now: number
                   ? `Reconectando…${active.deadline ? ` ${Math.max(0, Math.ceil((active.deadline - now) / 1000))}s` : ''}`
                   : 'Conectando…'}
             </Text>
+            {active.transport === 'usb' && <Text style={[styles.body, { color: colors.ok, fontSize: 12 }]}>via USB</Text>}
             <Text style={[styles.body, { marginLeft: 'auto', fontFamily: 'monospace' }]}>{elapsed(active.startedAt, now)}</Text>
           </View>
           <Text style={[styles.body, { marginTop: 6 }]}>
@@ -68,6 +69,18 @@ export function HomeScreen({ state, now, onPair }: { state: RcState; now: number
               Servidor {state.signaling === 'online' ? 'conectado' : state.signaling === 'connecting' ? 'conectando…' : 'offline'}
             </Text>
           </View>
+        )}
+        {state.available && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+            <Dot color={state.usb === 'online' ? colors.ok : colors.dim} />
+            <Text style={styles.body}>{state.usb === 'online' ? 'Cabo USB conectado (menor atraso)' : 'Cabo USB: não conectado'}</Text>
+          </View>
+        )}
+        {state.available && state.usb !== 'online' && (
+          <Text style={[styles.body, { marginTop: 6, fontSize: 12, color: colors.dim }]}>
+            Para conectar por cabo, ative a Depuração USB nas Opções do desenvolvedor, ligue o celular ao computador e
+            aceite o aviso de depuração.
+          </Text>
         )}
       </Card>
 

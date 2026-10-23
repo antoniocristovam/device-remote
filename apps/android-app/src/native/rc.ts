@@ -20,6 +20,8 @@ export type SessionState =
       sid: string;
       startedAt: number;
       reconnects: number;
+      /** "usb": over the cable, through the desktop's adb tunnel. */
+      transport: 'network' | 'usb';
       /** While reconnecting: when the link dropped and when the phone gives up. */
       downSince: number | null;
       deadline: number | null;
@@ -29,6 +31,8 @@ export interface RcState {
   identity: { fingerprint: string; name: string };
   settings: { signalingUrl: string; deviceName: string };
   signaling: 'offline' | 'connecting' | 'online';
+  /** Link to a desktop over the USB cable (adb reverse); "online" only while plugged into a computer running the app. */
+  usb: 'offline' | 'connecting' | 'online';
   available: boolean;
   accessibility: boolean;
   peers: Peer[];

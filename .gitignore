@@ -14,3 +14,5 @@ apps/android-app/android/local.properties
 !debug.keystore
 .fake-desktop.json
 release/
+# adb downloaded by scripts/fetch-platform-tools.mjs
+apps/desktop/resources/adb/

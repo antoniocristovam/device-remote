@@ -19,6 +19,10 @@ const api: RcApi = {
     status: () => ipcRenderer.invoke('rc:signaling:status'),
     onStatus: subscribe('rc:signaling-status'),
   },
+  usb: {
+    status: () => ipcRenderer.invoke('rc:usb:status'),
+    onStatus: subscribe('rc:usb'),
+  },
   peers: {
     list: () => ipcRenderer.invoke('rc:peers:list'),
     remove: (fp) => ipcRenderer.invoke('rc:peers:remove', fp),
@@ -53,10 +57,10 @@ const api: RcApi = {
   },
   session: {
     connect: (fp) => ipcRenderer.invoke('rc:session:connect', fp),
-    end: () => ipcRenderer.invoke('rc:session:end'),
-    sendAnswer: (sdp) => ipcRenderer.invoke('rc:session:answer', sdp),
-    sendIce: (c) => ipcRenderer.invoke('rc:session:ice', c),
-    reportConnection: (state) => ipcRenderer.invoke('rc:session:connection', state),
+    end: (fp) => ipcRenderer.invoke('rc:session:end', fp),
+    sendAnswer: (fp, sdp) => ipcRenderer.invoke('rc:session:answer', fp, sdp),
+    sendIce: (fp, c) => ipcRenderer.invoke('rc:session:ice', fp, c),
+    reportConnection: (fp, state) => ipcRenderer.invoke('rc:session:connection', fp, state),
     on: subscribe('rc:session'),
   },
 };

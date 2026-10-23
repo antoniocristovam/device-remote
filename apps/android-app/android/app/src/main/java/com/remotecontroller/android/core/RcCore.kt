@@ -19,6 +19,11 @@ class RcCore private constructor(val app: Context) {
     val identity = IdentityKeystore(app)
     val stores = Stores(app)
     val signaling = SignalingClient()
+    /**
+     * Desktop reached over the USB cable: `adb reverse` maps this local port to the desktop's own
+     * signaling server. Short backoff so plugging the cable in is noticed within a couple of seconds.
+     */
+    val usbSignaling = SignalingClient(maxBackoffMs = 2_000)
     val pairing = PairingManager(this)
     val sessions = SessionCoordinator(this)
 
@@ -29,9 +34,11 @@ class RcCore private constructor(val app: Context) {
     private val sinks = CopyOnWriteArrayList<(String, JSONObject) -> Unit>()
 
     init {
-        signaling.addListener(object : SignalingClient.Listener {
+        val statusListener = object : SignalingClient.Listener {
             override fun onStatus(status: SignalingClient.Status) = emitState()
-        })
+        }
+        signaling.addListener(statusListener)
+        usbSignaling.addListener(statusListener)
     }
 
     val sessionActive: Boolean get() = sessions.active != null
@@ -51,11 +58,26 @@ class RcCore private constructor(val app: Context) {
         available = on
         if (on) {
             ensureSignaling()
-            stores.peers().forEach { signaling.join(it.channelId) }
+            usbSignaling.start(USB_SIGNALING_URL)
+            stores.peers().forEach { joinEverywhere(it.channelId) }
         } else if (!sessionActive) {
-            stores.peers().forEach { signaling.leave(it.channelId) }
+            stopListening()
         }
         emitState()
+    }
+
+    fun joinEverywhere(channelId: String) {
+        signaling.join(channelId)
+        usbSignaling.join(channelId)
+    }
+
+    /** Leaves every pairing channel on both links (no longer available and no session running). */
+    fun stopListening() {
+        stores.peers().forEach {
+            signaling.leave(it.channelId)
+            usbSignaling.leave(it.channelId)
+        }
+        usbSignaling.stop()
     }
 
     /** Instantly forgets a desktop; an active session with it is torn down first. */
@@ -63,6 +85,7 @@ class RcCore private constructor(val app: Context) {
         val peer = stores.peer(fingerprint) ?: return
         if (sessions.active?.peer?.fingerprint == fingerprint) sessions.end("revoked")
         signaling.leave(peer.channelId)
+        usbSignaling.leave(peer.channelId)
         stores.removePeer(fingerprint)
         stores.clearChat(fingerprint)
         emitState()
@@ -74,6 +97,7 @@ class RcCore private constructor(val app: Context) {
         .put("identity", JSONObject().put("fingerprint", identity.fingerprint).put("name", stores.settings.deviceName))
         .put("settings", stores.settings.toJson())
         .put("signaling", signaling.status.name.lowercase())
+        .put("usb", usbSignaling.status.name.lowercase())
         .put("available", available)
         .put("accessibility", ControlAccessibilityService.isEnabled(app))
         .put("peers", JSONArray(stores.peers().map { it.toJson() }))
@@ -82,6 +106,9 @@ class RcCore private constructor(val app: Context) {
     fun emitState() = emit("state", state())
 
     companion object {
+        /** Phone side of `adb reverse tcp:38787`, set up by the desktop when the phone is plugged in. */
+        const val USB_SIGNALING_URL = "ws://127.0.0.1:38787"
+
         @Volatile
         private var instance: RcCore? = null
 

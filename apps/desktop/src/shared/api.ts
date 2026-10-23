@@ -1,9 +1,10 @@
 import type { PairingEvent } from '../main/pairing';
-import type { SessionEvent } from '../main/session';
+import type { SessionEvent, Transport } from '../main/session';
 import type { ChatEntry, SessionLogEntry, Settings, StoredPeer } from '../main/store';
 import type { SignalingStatus } from '../main/signalingClient';
+import type { UsbStatus } from '../main/usb/usbBridge';
 
-export type { ChatEntry, PairingEvent, SessionEvent, SessionLogEntry, Settings, StoredPeer, SignalingStatus };
+export type { ChatEntry, PairingEvent, SessionEvent, Transport, SessionLogEntry, Settings, StoredPeer, SignalingStatus, UsbStatus };
 
 export interface IceCandidateInit {
   candidate: string;
@@ -21,6 +22,10 @@ export interface RcApi {
   signaling: {
     status(): Promise<SignalingStatus>;
     onStatus(cb: (s: SignalingStatus) => void): () => void;
+  };
+  usb: {
+    status(): Promise<UsbStatus>;
+    onStatus(cb: (s: UsbStatus) => void): () => void;
   };
   peers: {
     list(): Promise<StoredPeer[]>;
@@ -59,11 +64,12 @@ export interface RcApi {
   };
   session: {
     connect(fingerprint: string): Promise<void>;
-    end(): Promise<void>;
-    sendAnswer(sdp: string): Promise<void>;
-    sendIce(c: IceCandidateInit): Promise<void>;
+    /** Sessions are per paired device: every call names the device's fingerprint. */
+    end(fingerprint: string): Promise<void>;
+    sendAnswer(fingerprint: string, sdp: string): Promise<void>;
+    sendIce(fingerprint: string, c: IceCandidateInit): Promise<void>;
     /** Reports RTCPeerConnection.connectionState so main can track drops and reconnections. */
-    reportConnection(state: RTCPeerConnectionState): Promise<void>;
+    reportConnection(fingerprint: string, state: RTCPeerConnectionState): Promise<void>;
     on(cb: (e: SessionEvent) => void): () => void;
   };
 }

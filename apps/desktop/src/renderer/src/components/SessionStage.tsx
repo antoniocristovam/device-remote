@@ -1,40 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, Bell, Circle, Loader2, PhoneOff, Square, Activity, MessageSquare, Upload } from 'lucide-react';
-import type { ControlMessage, GlobalAction } from '@rc/protocol';
+import { ArrowLeft, Bell, Circle, Loader2, PhoneOff, Square, Activity, MessageSquare, Upload, Usb } from 'lucide-react';
+import type { GlobalAction } from '@rc/protocol';
 import type { StoredPeer } from '../../../shared/api';
-import { contentRect, mapKey, normalise } from '../input/inputMapper';
-import type { useRemoteSession } from '../rtc/useRemoteSession';
+import { useStageInput } from '../input/useStageInput';
+import type { DeviceSession } from '../rtc/SessionsProvider';
 import { duration } from '../lib/format';
-import { useChat } from '../rtc/useChat';
 import { ChatPanel } from './ChatPanel';
 import { QualitySelector } from './QualitySelector';
-import { setStageEditHandler, type EditCommand } from '../input/editBridge';
-import { rc } from '../rc';
 
-type Session = ReturnType<typeof useRemoteSession>;
-
-function Pill({ children, tone = 'muted' }: { children: React.ReactNode; tone?: 'muted' | 'ok' | 'warn' | 'danger' }) {
+export function Pill({ children, tone = 'muted' }: { children: React.ReactNode; tone?: 'muted' | 'ok' | 'warn' | 'danger' }) {
   const color = { muted: 'text-muted', ok: 'text-ok', warn: 'text-warn', danger: 'text-danger' }[tone];
   return <span className={`rounded-md border border-line bg-bg/60 px-2 py-0.5 font-mono text-[11px] ${color}`}>{children}</span>;
 }
 
-export function SessionStage({ peer, session }: { peer: StoredPeer; session: Session }) {
-  const video = useRef<HTMLVideoElement>(null);
-  const stage = useRef<HTMLDivElement>(null);
-  const pointerDown = useRef(false);
-  const pendingMove = useRef<ControlMessage | null>(null);
-  const textBuf = useRef('');
-  const textTimer = useRef<number | undefined>(undefined);
-  const wheel = useRef({ dx: 0, dy: 0, x: 0.5, y: 0.5, timer: 0 });
+export function SessionStage({ peer, session }: { peer: StoredPeer; session: DeviceSession }) {
   const [now, setNow] = useState(Date.now());
   const [showHud, setShowHud] = useState(true);
-  const { state, stats, stream, startedAt } = session;
+  const { state, stats, stream, startedAt, chat } = session;
   const [chatOpen, setChatOpen] = useState(true);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const live = state.phase === 'live';
-  const chat = useChat(peer.fingerprint, session.peer, live);
+  const { video, stage, videoProps, stageProps, send } = useStageInput((m) => session.peer.current?.send(m));
 
   useEffect(() => {
     if (chatOpen) chat.clearUnread();
@@ -65,122 +53,15 @@ export function SessionStage({ peer, session }: { peer: StoredPeer; session: Ses
     },
   };
 
-  const send = (m: ControlMessage) => session.peer.current?.send(m);
-
-  /** Paste goes from this computer's clipboard to the phone; falls back to the phone's own clipboard. */
-  const pasteLocal = async () => {
-    const text = await rc.app.clipboardText();
-    send(text ? { t: 'text', text } : { t: 'edit', key: 'Paste' });
-  };
-
-  // macOS menu edit commands arrive here while the phone screen has focus.
-  useEffect(() => {
-    const map: Partial<Record<EditCommand, () => void>> = {
-      copy: () => send({ t: 'edit', key: 'Copy' }),
-      cut: () => send({ t: 'edit', key: 'Cut' }),
-      selectAll: () => send({ t: 'edit', key: 'SelectAll' }),
-      paste: () => void pasteLocal(),
-    };
-    setStageEditHandler((cmd) => {
-      if (document.activeElement !== stage.current) return false;
-      map[cmd]?.();
-      return true;
-    });
-    return () => setStageEditHandler(null);
-    // `send` only reads the stable peer ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     if (video.current && stream) video.current.srcObject = stream;
-  }, [stream]);
+  }, [stream, video]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     stage.current?.focus();
     return () => clearInterval(t);
-  }, []);
-
-  // Coalesce pointer moves to one per animation frame.
-  useEffect(() => {
-    let raf = 0;
-    const loop = () => {
-      if (pendingMove.current) {
-        send(pendingMove.current);
-        pendingMove.current = null;
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-    // `send` only reads the stable peer ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const rect = () => {
-    const v = video.current!;
-    return contentRect(v.getBoundingClientRect(), v.videoWidth, v.videoHeight);
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    stage.current?.focus();
-    if (e.button === 2) return send({ t: 'global', action: 'back' });
-    if (e.button === 1) return send({ t: 'global', action: 'home' });
-    if (e.button !== 0) return;
-    const p = normalise(rect(), e.clientX, e.clientY);
-    if (!p) return;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    pointerDown.current = true;
-    send({ t: 'pd', id: 0, ...p, ts: e.timeStamp });
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!pointerDown.current) return;
-    const p = normalise(rect(), e.clientX, e.clientY, true)!;
-    pendingMove.current = { t: 'pm', id: 0, ...p, ts: e.timeStamp };
-  };
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (!pointerDown.current) return;
-    pointerDown.current = false;
-    pendingMove.current = null;
-    const p = normalise(rect(), e.clientX, e.clientY, true)!;
-    send({ t: 'pu', id: 0, ...p, ts: e.timeStamp });
-  };
-  const onWheel = (e: React.WheelEvent) => {
-    const r = rect();
-    const p = normalise(r, e.clientX, e.clientY);
-    if (!p) return;
-    const w = wheel.current;
-    w.dx += e.deltaX / r.width;
-    w.dy += e.deltaY / r.height;
-    w.x = p.x;
-    w.y = p.y;
-    if (w.timer) return;
-    w.timer = window.setTimeout(() => {
-      send({ t: 'scroll', x: w.x, y: w.y, dx: Math.max(-0.8, Math.min(0.8, w.dx)), dy: Math.max(-0.8, Math.min(0.8, w.dy)) });
-      w.dx = w.dy = 0;
-      w.timer = 0;
-    }, 60);
-  };
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const m = mapKey(e.nativeEvent);
-    if (!m) return;
-    e.preventDefault();
-    if (m.t === 'edit' && m.key === 'Paste') {
-      void pasteLocal();
-      return;
-    }
-    if (m.t === 'text') {
-      // Batch fast typing into one text injection.
-      textBuf.current += m.text;
-      window.clearTimeout(textTimer.current);
-      textTimer.current = window.setTimeout(() => {
-        send({ t: 'text', text: textBuf.current });
-        textBuf.current = '';
-      }, 40);
-      return;
-    }
-    send(m);
-  };
+  }, [stage]);
 
   const nav = (action: GlobalAction) => () => send({ t: 'global', action });
   // Toolbar clicks must not steal keyboard focus from the stage, or typing stops reaching the phone.
@@ -204,6 +85,13 @@ export function SessionStage({ peer, session }: { peer: StoredPeer; session: Ses
         </span>
         <span className="truncate font-medium">{peer.name}</span>
         {startedAt && <Pill>{duration(now - startedAt)}</Pill>}
+        {session.transport === 'usb' && (
+          <Pill tone="ok">
+            <span className="inline-flex items-center gap-1">
+              <Usb size={11} /> USB
+            </span>
+          </Pill>
+        )}
         {state.phase === 'reconnecting' && (
           <Pill tone="warn">
             reconectando{state.deadline ? ` · ${Math.max(0, Math.ceil((state.deadline - now) / 1000))} s` : '…'}
@@ -254,15 +142,13 @@ export function SessionStage({ peer, session }: { peer: StoredPeer; session: Ses
             {stats.qualityLimitation && stats.qualityLimitation !== 'none' && <Pill tone="warn">limitado: {stats.qualityLimitation}</Pill>}
             {stats.jitterBufferMs != null && <Pill>buffer {stats.jitterBufferMs.toFixed(0)} ms</Pill>}
             {stats.packetLossPct != null && stats.packetLossPct > 0.5 && <Pill tone="warn">perda {stats.packetLossPct.toFixed(1)}%</Pill>}
-            {stats.relayed && <Pill tone="warn">via TURN</Pill>}
+            {stats.relayed && session.transport !== 'usb' && <Pill tone="warn">via TURN</Pill>}
           </motion.div>
         )}
 
         <div
           ref={stage}
-          tabIndex={0}
-          onKeyDown={onKeyDown}
-          onContextMenu={(e) => e.preventDefault()}
+          {...stageProps}
           style={{ outline: 'none' }}
           className="relative flex h-full max-h-full items-center justify-center"
         >
@@ -271,11 +157,8 @@ export function SessionStage({ peer, session }: { peer: StoredPeer; session: Ses
             autoPlay
             playsInline
             muted
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onWheel={onWheel}
+            {...videoProps}
+            onPointerCancel={videoProps.onPointerUp}
             className="h-full max-h-full w-auto max-w-full cursor-crosshair rounded-[22px] border border-line bg-black object-contain shadow-2xl shadow-black/60"
           />
           {state.phase !== 'live' && (

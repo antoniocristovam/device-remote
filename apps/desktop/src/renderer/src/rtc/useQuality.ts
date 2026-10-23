@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { QualityMode, QualityPreset, SessionChannelMessage } from '@rc/protocol';
+import type { Transport } from '../../../shared/api';
 import { rc } from '../rc';
 import type { LinkStats, PeerSession } from './PeerSession';
 import { QualityController } from './qualityController';
 
 export type AppliedQuality = Extract<SessionChannelMessage, { t: 'quality-applied' }>;
 
-const AUTO_START: QualityPreset = 'medium';
+/** Auto starts in the middle and climbs; over the USB cable bandwidth is plentiful, so it starts at the top. */
+const autoStart = (transport?: Transport): QualityPreset => (transport === 'usb' ? 'high' : 'medium');
 
 /**
  * Quality selection for a session: a fixed preset, or "auto" driven by QualityController from
  * the per-second link stats. The phone applies presets and confirms with quality-applied.
  */
-export function useQuality(peer: React.RefObject<PeerSession | undefined>) {
+export function useQuality(peer: React.RefObject<PeerSession | undefined>, transport: React.RefObject<Transport | undefined>) {
   const [mode, setModeState] = useState<QualityMode>('auto');
   const [applied, setApplied] = useState<AppliedQuality>();
   const [reason, setReason] = useState<string>();
@@ -34,9 +36,10 @@ export function useQuality(peer: React.RefObject<PeerSession | undefined>) {
   const apply = useCallback(() => {
     const m = modeRef.current;
     if (m === 'auto') {
-      controller.current = new QualityController(AUTO_START);
+      const start = autoStart(transport.current);
+      controller.current = new QualityController(start);
       setReason('início');
-      send(AUTO_START);
+      send(start);
     } else {
       controller.current = undefined;
       setReason(undefined);

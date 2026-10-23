@@ -21,15 +21,38 @@ export type PairingEvent =
   | { state: 'failed'; reason: string }
   | { state: 'expired' };
 
+const VIRTUAL_ADAPTER = /tailscale|zerotier|vethernet|wsl|docker|virtualbox|vmware|hyper-v|vpn|tap|tun|utun|loopback/i;
+
+/**
+ * The address a phone on the same Wi-Fi can most likely reach: a private LAN address on a physical
+ * adapter. Link-local (169.254.x, e.g. Tailscale or an unconfigured adapter) never qualifies, and
+ * VPN/VM adapters only as a last resort.
+ */
+export function pickLanAddress(ifaces: NodeJS.Dict<{ address: string; family: string | number; internal: boolean }[]>): string | undefined {
+  const score = (name: string, ip: string) => {
+    if (ip.startsWith('169.254.')) return -1;
+    let s = ip.startsWith('192.168.') ? 30 : ip.startsWith('10.') ? 20 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 10 : 5;
+    if (!VIRTUAL_ADAPTER.test(name)) s += 100;
+    return s;
+  };
+  let best: { ip: string; s: number } | undefined;
+  for (const [name, list] of Object.entries(ifaces)) {
+    for (const i of list ?? []) {
+      if (i.internal || (i.family !== 'IPv4' && i.family !== 4)) continue;
+      const s = score(name, i.address);
+      if (s >= 0 && (!best || s > best.s)) best = { ip: i.address, s };
+    }
+  }
+  return best?.ip;
+}
+
 /** The phone must reach the signaling server too: never advertise "localhost" in the QR. */
 export function advertisedUrl(url: string): string {
   try {
     const u = new URL(url);
     if (!['localhost', '127.0.0.1', '::1'].includes(u.hostname)) return url;
-    const lan = Object.values(networkInterfaces())
-      .flat()
-      .find((i) => i && i.family === 'IPv4' && !i.internal);
-    if (lan) u.hostname = lan.address;
+    const lan = pickLanAddress(networkInterfaces());
+    if (lan) u.hostname = lan;
     return u.toString().replace(/\/$/, '');
   } catch {
     return url;

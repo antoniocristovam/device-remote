@@ -39,6 +39,8 @@ class WebRtcSession(
     projectionData: Intent,
     iceServers: List<PeerConnection.IceServer>,
     private val listener: Listener,
+    /** USB sessions: the only path is the desktop's TURN relay, reached through adb reverse. */
+    relayOnly: Boolean = false,
 ) {
     interface Listener {
         fun onLocalSdp(type: String, sdp: String)
@@ -113,6 +115,7 @@ class WebRtcSession(
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            if (relayOnly) iceTransportsType = PeerConnection.IceTransportsType.RELAY
         }
         pc = factory.createPeerConnection(config, observer) ?: error("PeerConnection creation failed")
         sender = pc.addTrack(track, listOf("screen"))

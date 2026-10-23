@@ -7,6 +7,7 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.view.Surface
 import org.webrtc.CapturerObserver
 import org.webrtc.SurfaceTextureHelper
@@ -53,25 +54,37 @@ class ProjectionCapturer(
         p.registerCallback(projectionCallback, helper.handler)
         helper.handler.post {
             helper.setTextureSize(width, height)
-            display = p.createVirtualDisplay(
-                "rc-screen", width, height, DENSITY_DPI, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                Surface(helper.surfaceTexture), null, null,
-            )
+            display = createDisplay(p, width, height)
             observer.onCapturerStarted(true)
             helper.startListening(this)
         }
     }
 
-    /** Resizes the existing virtual display; never creates a second one. */
+    /**
+     * Android 14+: resizes the existing virtual display (a second one is not allowed). Older
+     * versions recreate it instead: on some of them (seen on MIUI / Android 11) resize() grows the
+     * buffer but the mirrored screen keeps its old size, drawn in a corner of the frame.
+     */
     override fun changeCaptureFormat(width: Int, height: Int, framerate: Int) {
         if (width == this.width && height == this.height) return
         this.width = width
         this.height = height
         helper.handler.post {
             helper.setTextureSize(width, height)
-            display?.resize(width, height, DENSITY_DPI)
+            val p = projection
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE || p == null) {
+                display?.resize(width, height, DENSITY_DPI)
+            } else {
+                display?.release()
+                display = createDisplay(p, width, height)
+            }
         }
     }
+
+    private fun createDisplay(p: MediaProjection, width: Int, height: Int) = p.createVirtualDisplay(
+        "rc-screen", width, height, DENSITY_DPI, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+        Surface(helper.surfaceTexture), null, null,
+    )
 
     override fun onFrame(frame: VideoFrame) = observer.onFrameCaptured(frame)
 

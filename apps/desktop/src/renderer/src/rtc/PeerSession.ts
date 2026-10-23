@@ -1,5 +1,6 @@
 import { ChatFrame, Channels, ControlMessage, FILE_ID_BYTES, FileFrame, SessionChannelMessage, type IceServer } from '@rc/protocol';
 import { rc } from '@/rc';
+import type { Transport } from '../../../shared/api';
 
 export interface LinkStats {
   rttMs?: number;
@@ -50,11 +51,17 @@ export class PeerSession {
   private sender?: Extract<SessionChannelMessage, { t: 'sender-stats' }>;
   handlers: PeerDataHandlers = {};
 
-  constructor(iceServers: IceServer[], private readonly ev: PeerSessionEvents) {
-    this.pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
+  constructor(
+    private readonly fingerprint: string,
+    iceServers: IceServer[],
+    transport: Transport,
+    private readonly ev: PeerSessionEvents,
+  ) {
+    // Over the USB cable the only path is the desktop's local TURN relay, reached by the phone through adb.
+    this.pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', iceTransportPolicy: transport === 'usb' ? 'relay' : 'all' });
     this.pc.onicecandidate = (e) => {
       if (e.candidate?.candidate) {
-        void rc.session.sendIce({ candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex });
+        void rc.session.sendIce(fingerprint, { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex });
       }
     };
     this.pc.ontrack = (e) => {
@@ -105,12 +112,37 @@ export class PeerSession {
     this.statsTimer = window.setInterval(() => void this.collectStats(), 1000);
   }
 
+  /**
+   * Answer with H.264 first: phones encode it in hardware without the forced key frame every 15 s
+   * that libwebrtc applies to Qualcomm's VP8 encoder (a frame-rate dip each time). VP8 and the rest
+   * stay as fallbacks; the answer only keeps codecs the phone offered.
+   */
+  private preferH264() {
+    const caps = RTCRtpReceiver.getCapabilities('video')?.codecs;
+    if (!caps) return;
+    const rank = (c: RTCRtpCodec) => {
+      if (c.mimeType === 'video/H264') return c.sdpFmtpLine?.includes('packetization-mode=1') ? 0 : 1;
+      if (c.mimeType === 'video/VP8') return 2;
+      return 3;
+    };
+    const ordered = [...caps].sort((a, b) => rank(a) - rank(b));
+    for (const t of this.pc.getTransceivers()) {
+      if (t.receiver.track.kind !== 'video') continue;
+      try {
+        t.setCodecPreferences(ordered);
+      } catch {
+        /* keep the default order */
+      }
+    }
+  }
+
   async handleOffer(sdp: string) {
     await this.pc.setRemoteDescription({ type: 'offer', sdp });
+    this.preferH264();
     for (const c of this.pendingIce.splice(0)) await this.pc.addIceCandidate(c).catch(() => {});
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
-    await rc.session.sendAnswer(this.pc.localDescription!.sdp);
+    await rc.session.sendAnswer(this.fingerprint, this.pc.localDescription!.sdp);
   }
 
   async addIce(c: RTCIceCandidateInit) {

@@ -24,12 +24,13 @@ import org.webrtc.PeerConnection
  *   consent -> foreground service + persistent indicator -> sess.accept + signed SDP offer.
  * Every path that ends a session goes through [end], which also removes the indicator.
  */
-class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
+class SessionCoordinator(private val core: RcCore) {
     private val main = Handler(Looper.getMainLooper())
 
-    data class Pending(val peer: PairedDesktop, val nonceD: String)
+    /** `sig` is the link the request arrived on (network or USB); the whole session stays on it. */
+    data class Pending(val peer: PairedDesktop, val nonceD: String, val sig: SignalingClient)
 
-    class Active(val peer: PairedDesktop, val token: SessionCrypto.Token) {
+    class Active(val peer: PairedDesktop, val token: SessionCrypto.Token, val sig: SignalingClient, val usb: Boolean) {
         var rtc: WebRtcSession? = null
         var chat: ChatTransfers? = null
         var connected = false
@@ -45,7 +46,8 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
     var active: Active? = null
         private set
 
-    private var iceServers: List<PeerConnection.IceServer> = DEFAULT_ICE
+    /** Per link: the USB link's TURN credentials point at the desktop's relay and must not replace the network ones. */
+    private val iceServers = HashMap<SignalingClient, List<PeerConnection.IceServer>>()
     private val failTimeout = Runnable { end("lost") }
 
     /** While the link is down: retry an ICE restart every few seconds as long as signaling is up. */
@@ -67,7 +69,13 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     init {
-        core.signaling.addListener(this)
+        core.signaling.addListener(linkListener(core.signaling))
+        core.usbSignaling.addListener(linkListener(core.usbSignaling))
+    }
+
+    private fun linkListener(sig: SignalingClient) = object : SignalingClient.Listener {
+        override fun onStatus(status: SignalingClient.Status) = onLinkStatus(sig, status)
+        override fun onMessage(msg: JSONObject) = onLinkMessage(sig, msg)
     }
 
     fun stateJson(): JSONObject {
@@ -78,6 +86,7 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
                 .put("phase", if (a.connected) "live" else if (a.everConnected) "reconnecting" else "connecting")
                 .put("peer", a.peer.toJson()).put("sid", a.token.sid).put("startedAt", a.token.iat)
                 .put("reconnects", a.reconnects)
+                .put("transport", if (a.usb) "usb" else "network")
                 .put("downSince", a.downSince ?: JSONObject.NULL)
                 .put("deadline", a.downSince?.let { it + CONNECT_TIMEOUT_MS } ?: JSONObject.NULL)
             p != null -> JSONObject().put("phase", "request").put("peer", p.peer.toJson())
@@ -90,7 +99,7 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
     fun deny(reason: String = "denied by user") {
         val p = pending ?: return
         pending = null
-        core.signaling.relay(p.peer.channelId, JSONObject().put("k", "sess.deny").put("reason", reason))
+        p.sig.relay(p.peer.channelId, JSONObject().put("k", "sess.deny").put("reason", reason))
         Notifications.cancelRequest(core.app)
         core.emitState()
     }
@@ -113,23 +122,25 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
         val (msg, token) = SessionCrypto.buildAccept(
             p.peer.channelId, p.nonceD, p.peer.fingerprint, core.identity.fingerprint, core.identity,
         )
-        val a = Active(p.peer, token)
+        val usb = p.sig === core.usbSignaling
+        val a = Active(p.peer, token, p.sig, usb)
         a.chat = ChatTransfers(core, p.peer.fingerprint) { a.rtc }
         active = a
         core.stores.touchPeer(p.peer.fingerprint)
         core.stores.logSessionStart(SessionLogEntry(token.sid, p.peer.fingerprint, p.peer.name, System.currentTimeMillis()))
-        core.signaling.relay(p.peer.channelId, msg)
+        p.sig.relay(p.peer.channelId, msg)
         ControlAccessibilityService.instance?.showIndicator(true)
 
         try {
-            a.rtc = WebRtcSession(service, projectionData, iceServers, rtcListener(a))
+            a.rtc = WebRtcSession(service, projectionData, iceServers[p.sig] ?: DEFAULT_ICE, rtcListener(a), relayOnly = usb)
         } catch (e: Exception) {
             Log.e(TAG, "failed to start WebRTC", e)
             end("error")
             return
         }
         main.postDelayed(failTimeout, CONNECT_TIMEOUT_MS)
-        watchNetwork()
+        // Over the cable the phone's own network changes are irrelevant.
+        if (!usb) watchNetwork()
         core.emitState()
     }
 
@@ -145,7 +156,7 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
     private fun restartIce(a: Active, why: String) {
         val now = SystemClock.elapsedRealtime()
         if (now - a.lastRestartAt < MIN_RESTART_GAP_MS) return
-        if (core.signaling.status != SignalingClient.Status.ONLINE) return
+        if (a.sig.status != SignalingClient.Status.ONLINE) return
         a.lastRestartAt = now
         Log.i(TAG, "ICE restart ($why)")
         a.rtc?.restartIce()
@@ -200,8 +211,9 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
         runCatching { core.app.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
     }
 
-    override fun onStatus(status: SignalingClient.Status) {
+    private fun onLinkStatus(sig: SignalingClient, status: SignalingClient.Status) {
         val a = active ?: return
+        if (a.sig !== sig) return
         if (status == SignalingClient.Status.ONLINE && !a.connected && a.everConnected) main.post { restartIce(a, "signaling back") }
     }
 
@@ -219,20 +231,20 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
         unwatchNetwork()
         a.rtc?.sendSessionEnd(reason)
         a.chat?.close()
-        core.signaling.relay(a.peer.channelId, JSONObject().put("k", "sess.end").put("sid", a.token.sid).put("reason", reason))
+        a.sig.relay(a.peer.channelId, JSONObject().put("k", "sess.end").put("sid", a.token.sid).put("reason", reason))
         // Give the end message a moment on the data channel before tearing everything down.
         main.postDelayed({ a.rtc?.close() }, 150)
         core.stores.logSessionEnd(a.token.sid, reason, a.reconnects)
         ControlAccessibilityService.instance?.showIndicator(false)
         core.app.stopService(Intent(core.app, RemoteSessionService::class.java))
-        if (!core.available) core.signaling.leave(a.peer.channelId)
+        if (!core.available) core.stopListening()
         core.emit("sessionEnded", JSONObject().put("reason", reason).put("peerName", a.peer.name))
         core.emitState()
     }
 
     // ---------------- Signaling ----------------
 
-    override fun onMessage(msg: JSONObject) {
+    private fun onLinkMessage(sig: SignalingClient, msg: JSONObject) {
         when (msg.optString("t")) {
             "turn-credentials" -> msg.optJSONArray("iceServers")?.let { arr ->
                 val parsed = SignalingClient.parseIceServers(arr).map { (urls, user, cred) ->
@@ -241,13 +253,13 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
                         if (cred != null) setPassword(cred)
                     }.createIceServer()
                 }
-                if (parsed.isNotEmpty()) iceServers = parsed
+                if (parsed.isNotEmpty()) iceServers[sig] = parsed
             }
             "relay" -> {
                 if (msg.optString("from") != "desktop") return
                 val peer = core.stores.peerByChannel(msg.optString("room")) ?: return
                 try {
-                    onRelay(peer, msg.getJSONObject("data"))
+                    onRelay(sig, peer, msg.getJSONObject("data"))
                 } catch (e: Exception) {
                     Log.w(TAG, "bad relay message", e)
                 }
@@ -255,28 +267,30 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
         }
     }
 
-    private fun onRelay(peer: PairedDesktop, data: JSONObject) {
+    private fun onRelay(sig: SignalingClient, peer: PairedDesktop, data: JSONObject) {
         val a = active
+        // A live session only listens to the link it was set up on.
+        if (a != null && data.optString("k") != "sess.req" && data.optString("k") != "sess.resume" && a.sig !== sig) return
         when (data.optString("k")) {
             "sess.req" -> {
                 if (!SessionCrypto.verifyRequest(peer.channelId, peer.publicKey, data)) return
                 if (a != null) {
-                    core.signaling.relay(peer.channelId, JSONObject().put("k", "sess.deny").put("reason", "busy"))
+                    sig.relay(peer.channelId, JSONObject().put("k", "sess.deny").put("reason", "busy"))
                     return
                 }
-                pending = Pending(peer, data.getString("nonceD"))
-                core.signaling.requestTurn()
+                pending = Pending(peer, data.getString("nonceD"), sig)
+                sig.requestTurn()
                 Notifications.showRequest(core.app, peer.name)
                 core.emit("sessionRequest", JSONObject().put("peer", peer.toJson()))
                 core.emitState()
             }
             "sess.resume" -> {
-                if (a == null || a.peer.fingerprint != peer.fingerprint || data.optString("sid") != a.token.sid) {
+                if (a == null || a.peer.fingerprint != peer.fingerprint || data.optString("sid") != a.token.sid || a.sig !== sig) {
                     // Unknown session (e.g. the app was restarted): tell the desktop so it stops waiting.
                     // Only for authentic requests, so a third party cannot probe or spam the channel.
                     val sid = data.optString("sid")
                     if (SessionCrypto.verifyResume(peer.channelId, peer.publicKey, sid, data)) {
-                        core.signaling.relay(peer.channelId, JSONObject().put("k", "sess.end").put("sid", sid).put("reason", "expired"))
+                        if (a?.token?.sid != sid) sig.relay(peer.channelId, JSONObject().put("k", "sess.end").put("sid", sid).put("reason", "expired"))
                     }
                     return
                 }
@@ -305,12 +319,12 @@ class SessionCoordinator(private val core: RcCore) : SignalingClient.Listener {
     private fun rtcListener(a: Active) = object : WebRtcSession.Listener {
         override fun onLocalSdp(type: String, sdp: String) = main.post {
             if (active !== a) return@post
-            core.signaling.relay(a.peer.channelId, SessionCrypto.signSdp(a.token.sid, type, sdp, core.identity))
+            a.sig.relay(a.peer.channelId, SessionCrypto.signSdp(a.token.sid, type, sdp, core.identity))
         }.let {}
 
         override fun onLocalIce(candidate: IceCandidate) = main.post {
             if (active !== a) return@post
-            core.signaling.relay(
+            a.sig.relay(
                 a.peer.channelId,
                 JSONObject().put("k", "ice").put("sid", a.token.sid).put("candidate", candidate.sdp)
                     .put("sdpMid", candidate.sdpMid).put("sdpMLineIndex", candidate.sdpMLineIndex),
